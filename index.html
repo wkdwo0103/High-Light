@@ -1224,7 +1224,7 @@ main{padding-bottom:calc(110px + var(--safe-b))}
 .vis-opts button{color:var(--sub);background:var(--card);border-color:var(--line)}
 .vis-opts button.on{border-color:var(--lime);background:var(--card-2);color:var(--ink)}
 .vis-opts button.on b{color:var(--lime)}
-.dp-t{color:var(--muted)}
+.dp-face .dp-t{color:var(--ink)}.dp-face.empty .dp-t{color:var(--muted)}
 .card.todo .badge.b-pri,.card.todo .badge.b-sky,.card.todo .badge.b-gold,.card.clip .badge.b-pri,.card.clip .badge.b-sky,.card.clip .badge.b-gold,.card.post .badge.b-pri,.card.post .badge.b-sky,.card.post .badge.b-gold,.card.prayer-card .badge.b-pri,.card.prayer-card .badge.b-sky,.card.prayer-card .badge.b-gold,.card.qt-plan .badge.b-pri,.card.qt-plan .badge.b-sky,.card.qt-plan .badge.b-gold,.card.bul-card .badge.b-pri,.card.bul-card .badge.b-sky,.card.bul-card .badge.b-gold,.card.sermon .badge.b-pri,.card.sermon .badge.b-sky,.card.sermon .badge.b-gold,.card.qt-log .badge.b-pri,.card.qt-log .badge.b-sky,.card.qt-log .badge.b-gold,.card.notice-line .badge.b-pri,.card.notice-line .badge.b-sky,.card.notice-line .badge.b-gold,.card.poll-card .badge.b-pri,.card.poll-card .badge.b-sky,.card.poll-card .badge.b-gold,.card.food-card .badge.b-pri,.card.food-card .badge.b-sky,.card.food-card .badge.b-gold{background:#151517!important;color:#FFFADC!important}
 .card .stars,.stars{color:#8F886A}
 .card .stars .on,.stars .on{color:#8A5800}
@@ -1233,6 +1233,11 @@ main{padding-bottom:calc(110px + var(--safe-b))}
 .weekdots span{background:var(--card-2)}
 .weekdots span.on{background:var(--lime)}
 .weekdots span.now{background:transparent}
+.pt-hist{margin-top:16px;border-top:1px solid var(--line);padding-top:12px}
+.pt-hist>b{display:block;font-size:13px;margin-bottom:6px;color:var(--sub)}
+.pt-row{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--line)}
+.pt-row b{display:block;font-size:13.5px}
+.pt-row small{display:block;font-size:11.5px;color:var(--sub);line-height:1.45}
 </style>
 </head>
 <body>
@@ -1465,11 +1470,57 @@ var Core = (function () {
   };
 
   /* 서버(Code.gs)와 앱(index.html) 안의 Core가 같은지 확인하는 번호예요. Core를 고칠 때마다 두 곳 모두 올려 주세요. */
-  var VERSION = '2026.11.24-7';
+  var VERSION = '2026.11.25-1';
   var DEFAULT_PASTOR_CODE = '7777'; // 교역자 가입 비밀코드 기본값 — 교역자 화면에서 꼭 바꿔 주세요
   var VISIBILITY = ['all', 'class', 'teacher', 'private'];
   var SERVICES = { sun: '주일예배', dawn: '새벽예배', wed: '수요예배', fri: '금요예배' };
-  var POINTS = { qt: 5, sun: 5, dawn: 15, wed: 10, fri: 10, sermon: 10, birthday: 10, newcomer: 20 };
+  var POINTS = { qt: 5, sun: 5, dawn: 15, wed: 10, fri: 10, sermon: 10, birthday: 10, newcomer: 20 }; // 기본 점수
+  /* 달란트 점수 바꾸기: 교역자가 '적용 시작일'과 함께 정해요 (설정 시트 pointPlans).
+   * 각 기록은 그 날짜에 적용되던 점수로 계산해요 → 시작일 전 기록은 예전 점수 그대로예요. */
+  var POINT_KEYS = ['qt', 'sun', 'dawn', 'wed', 'fri', 'sermon', 'birthday', 'newcomer'];
+  function pointPlans(S) {
+    if (S.__pp) return S.__pp;
+    var row = S.all('settings').filter(function (x) { return x.key === 'pointPlans'; })[0], list = [];
+    try { list = JSON.parse((row && row.value) || '[]') || []; } catch (e) { list = []; }
+    list = list.filter(function (x) { return x && isDate(x.from || '') && x.pts && typeof x.pts === 'object'; })
+      .sort(function (a, b) { return a.from < b.from ? -1 : a.from > b.from ? 1 : 0; });
+    S.__pp = list; S.__ppAt = {};
+    return list;
+  }
+  function pointsAt(S, date) {
+    var plans = pointPlans(S);
+    if (S.__ppAt[date]) return S.__ppAt[date];
+    var out = {}; POINT_KEYS.forEach(function (k) { out[k] = POINTS[k]; });
+    plans.forEach(function (x) {
+      if (x.from > date) return;
+      POINT_KEYS.forEach(function (k) { var v = parseInt(x.pts[k], 10); if (v >= 0 && v <= 100) out[k] = v; });
+    });
+    S.__ppAt[date] = out;
+    return out;
+  }
+  function pointsSave(S, me, p) {
+    if (!isAdmin(S, me)) throw userError('교역자만 달란트 점수를 바꿀 수 있어요.');
+    var plans = pointPlans(S).slice(), from = clean(p.from, 10);
+    if (!isDate(from)) throw userError('적용 시작일을 골라 주세요.');
+    if (p.op === 'delete') {
+      if (!plans.some(function (x) { return x.from === from; })) throw userError('지울 설정을 찾지 못했어요.');
+      plans = plans.filter(function (x) { return x.from !== from; });
+    } else {
+      var pts = {};
+      POINT_KEYS.forEach(function (k) {
+        var raw = p.pts ? p.pts[k] : undefined, v = parseInt(raw, 10);
+        if (raw === undefined || raw === null || String(raw).trim() === '' || isNaN(v) || v < 0 || v > 100 || String(v) !== String(raw).trim()) throw userError(POINT_LABELS[k] + ' 점수는 0~100 사이 숫자로 적어 주세요.');
+        pts[k] = v;
+      });
+      plans = plans.filter(function (x) { return x.from !== from; });
+      plans.push({ from: from, pts: pts, by: me.name, at: S.now() });
+    }
+    plans.sort(function (a, b) { return a.from < b.from ? -1 : 1; });
+    var rows = S.all('settings').filter(function (x) { return x.key !== 'pointPlans'; });
+    rows.push({ key: 'pointPlans', value: JSON.stringify(plans), updatedAt: S.now() });
+    S.save('settings', rows);
+    S.__pp = null;
+  }
   var POINT_LABELS = { qt: 'QT 인증', sun: '주일예배 출석', dawn: '새벽예배 출석', wed: '수요예배 출석', fri: '금요예배 출석', sermon: '설교 3줄 요약', birthday: '생일 축하 선물', newcomer: '새가족 4번 출석 달성' };
   function svc(a) { return SERVICES[a.service] ? a.service : 'sun'; }
   function pickService(v) { return SERVICES[v] ? v : 'sun'; }
@@ -2173,7 +2224,7 @@ var Core = (function () {
     var hit = codes.filter(function (c) { return c.code === clean(p.code); })[0];
     if (!hit) { S.fail('code:' + me.id); throw userError('출석코드가 맞지 않아요.'); }
     var sv = pickService(hit.service);
-    var out = { date: today, service: sv, points: POINTS[sv] || 0, label: POINT_LABELS[sv] || '', already: false };
+    var out = { date: today, service: sv, points: pointsAt(S, today)[sv] || 0, label: POINT_LABELS[sv] || '', already: false };
     if (att.some(function (a) { return a.date === today && a.memberId === me.id && svc(a) === sv; })) { out.already = true; out.points = 0; return out; }
     att.push({ id: uid(), date: today, memberId: me.id, by: 'self', at: S.now(), service: sv });
     S.save('attendance', att);
@@ -2739,20 +2790,21 @@ var Core = (function () {
       a.items.push({ date: date, key: key, amount: amount, label: label });
     }
     S.all('qtLogs').forEach(function (l) {
-      if (inRange(qtCfg, l.date)) add(l.memberId, l.date, 'qt', POINTS.qt * 2, POINT_LABELS.qt + ' (' + qtCfg.title + (/2배/.test(qtCfg.title) ? '' : ' 2배') + '🔥)');
-      else add(l.memberId, l.date, 'qt', POINTS.qt, POINT_LABELS.qt);
+      var pq = pointsAt(S, l.date).qt;
+      if (inRange(qtCfg, l.date)) add(l.memberId, l.date, 'qt', pq * 2, POINT_LABELS.qt + ' (' + qtCfg.title + (/2배/.test(qtCfg.title) ? '' : ' 2배') + ')');
+      else add(l.memberId, l.date, 'qt', pq, POINT_LABELS.qt);
     });
     S.all('attendance').forEach(function (a) {
       var k = svc(a);
-      var pts = POINTS[k];
+      var pa = pointsAt(S, a.date), pts = pa[k] || 0;
       var lbl = POINT_LABELS[k];
       if (k === 'dawn' && isSpecialDawnDate(dawnCfg, a.date)) {
-        pts = POINTS.dawn * 2;
-        lbl = POINT_LABELS.dawn + ' (' + dawnCfg.title + ' 2배🔥)';
+        pts = pa.dawn * 2;
+        lbl = POINT_LABELS.dawn + ' (' + dawnCfg.title + ' 2배)';
       }
       add(a.memberId, a.date, k, pts, lbl);
     });
-    S.all('sermonNotes').forEach(function (n) { add(n.memberId, n.date, 'sermon', POINTS.sermon, POINT_LABELS.sermon); });
+    S.all('sermonNotes').forEach(function (n) { add(n.memberId, n.date, 'sermon', pointsAt(S, n.date).sermon, POINT_LABELS.sermon); });
     S.all('members').forEach(function (m) {
       if (m.active !== '1') return;
       var reg = (m.createdAt || '').slice(0, 10);
@@ -2760,11 +2812,11 @@ var Core = (function () {
       if (isDate(m.birth || '') && m.role === 'student' && isDate(reg) && regYear >= 2020) {
         for (var yy = regYear; yy <= +tdy.slice(0, 4); yy++) {
           var bd = bdayIn(yy, m.birth);
-          if (bd >= reg && bd <= tdy) add(m.id, bd, 'birthday', POINTS.birthday, POINT_LABELS.birthday);
+          if (bd >= reg && bd <= tdy) add(m.id, bd, 'birthday', pointsAt(S, bd).birthday, POINT_LABELS.birthday);
         }
       }
       var nc = newcomerInfo(S, m, tdy);
-      if (nc && nc.doneDate) add(m.id, nc.doneDate, 'newcomer', POINTS.newcomer, POINT_LABELS.newcomer);
+      if (nc && nc.doneDate) add(m.id, nc.doneDate, 'newcomer', pointsAt(S, nc.doneDate).newcomer, POINT_LABELS.newcomer);
     });
     S.all('talentLog').forEach(function (g) { add(g.memberId, g.createdAt.slice(0, 10), 'bonus', Number(g.amount) || 0, (Number(g.amount) >= 0 ? '선생님 보너스' : '선생님 조정') + (g.reason ? ' · ' + g.reason : '')); });
     var rw = {}; rewardsAll(S).forEach(function (r) { rw[r.id] = r; });
@@ -2798,7 +2850,7 @@ var Core = (function () {
     }
     var res = {
       season: season,
-      points: POINTS, labels: POINT_LABELS, services: SERVICES,
+      points: pointsAt(S, today), labels: POINT_LABELS, services: SERVICES,
       balance: mine.balance, earned: mine.earned, spent: mine.spent,
       monthEarned: mine.items.filter(function (x) { return x.amount > 0 && x.date.slice(0, 7) === month; }).reduce(function (a, x) { return a + x.amount; }, 0),
       history: mine.items.slice().sort(function (a, b) { return a.date < b.date ? 1 : -1; }).slice(0, 40),
@@ -2808,6 +2860,7 @@ var Core = (function () {
       treeGrowth: treeGrowth(S, me.id, mine), // 나무가 자란 만큼: 마지막 열매를 딴 뒤 모은 달란트
       monthRank: monthRank
     };
+    if (isAdmin(S, me)) { res.pointPlans = pointPlans(S).map(function (x) { return { from: x.from, pts: x.pts, by: x.by || '' }; }); res.pointDefaults = POINTS; }
     if (me.role === 'teacher') {
       res.redemptions = S.all('redemptions').filter(inSeasonOrOpen).map(redView).sort(function (a, b) { return a.createdAt < b.createdAt ? 1 : -1; });
       res.balances = members.filter(function (m) { return m.active === '1' && m.role === 'student'; }).map(function (m) {
@@ -3659,6 +3712,7 @@ var Core = (function () {
     mealSlotSave: { mut: true, teacher: true, fn: mealSlotSave },
     rewardSave: { mut: true, teacher: true, fn: rewardSave },
     talentGrant: { mut: true, teacher: true, fn: talentGrant },
+    pointsSave: { mut: true, teacher: true, fn: pointsSave },
     eventJoin: { mut: true, fn: eventJoin },
     eventLeave: { mut: true, fn: eventLeave },
     eventMemo: { mut: true, fn: eventMemo },
@@ -3711,7 +3765,7 @@ var Core = (function () {
       S.save = function (t) { if (t === 'members') S.__nt = null; return save0.apply(S, arguments); };
       S.__ntWrap = true;
     }
-    S.__nt = null;
+    S.__nt = null; S.__pp = null;
     try {
       var a = ACTIONS[req.action];
       if (!a) throw userError('알 수 없는 요청이에요.');
@@ -7055,9 +7109,9 @@ var Buddy = (function () {
         '<span class="grow"><span class="t">' + esc(b.name) + '</span> <span class="sub">' + esc([b.grade, b.cls].filter(Boolean).join(' · ')) + '</span><div class="sub">모은 ' + b.earned + ' · 쓴 ' + b.spent + '</div></span>' +
         coin(b.balance) + (isAdm() || (myCls() && b.cls === myCls()) ? '<button class="btn line sm" data-act="grant" data-id="' + b.id + '">±</button>' : '') + '</div>';
     }).join('') + '</div>';
-    h += '<div class="card rules"><b style="font-size:14px">적립 규칙</b>' + Object.keys(t.points).map(function (k) {
+    h += '<div class="card rules"><div class="row between"><b style="font-size:14px">적립 규칙</b>' + (isAdm() ? '<button class="btn line sm" data-act="pointsEdit">점수 바꾸기</button>' : '') + '</div>' + Object.keys(t.points).map(function (k) {
       return '<div class="rule"><span>' + RULE_ICONS[k] + ' ' + esc(t.labels[k]) + '</span><b>+' + svPts(k) + (svPts(k) > t.points[k] ? ' ' : '') + '</b></div>';
-    }).join('') + '<div class="hint">점수를 바꾸려면 Code.gs 공통 로직의 POINTS 값을 고치면 돼요.</div></div>';
+    }).join('') + (isAdm() ? '<div class="hint">점수를 바꾸면 적용 시작일부터 새 점수로 쌓이고, 그 전 기록은 예전 점수 그대로예요.</div>' : '') + '</div>';
     return h;
   }
 
@@ -7866,6 +7920,27 @@ var Buddy = (function () {
         fields: [{ name: 'emoji', label: '이모지', max: 4 }, { name: 'title', label: '이름', required: true, max: 30 }, { name: 'cost', label: '필요한 달란트', required: true, numeric: true },
           { name: 'desc', label: '설명', type: 'textarea' }, { name: 'active', label: '상태', type: 'select', options: [['1', '교환 받는 중'], ['0', '잠시 쉬기']] }],
         onSubmit: function (v) { if (r) v.id = r.id; return mutate('rewardSave', { reward: v }, '저장했어요'); } });
+    },
+    pointsEdit: function () {
+      var t = state.data.talent, cur = t.points || {}, plans = t.pointPlans || [], keys = ['qt', 'sun', 'dawn', 'wed', 'fri', 'sermon', 'birthday', 'newcomer'];
+      var vals = { from: today() }; keys.forEach(function (k) { vals['p_' + k] = String(cur[k] != null ? cur[k] : ''); });
+      var hist = '<div class="pt-hist"><b>바꾼 기록</b>' + (plans.length ? plans.slice().reverse().map(function (x) {
+        return '<div class="pt-row"><span class="grow"><b>' + esc(fmtD(x.from, true)) + '부터</b><small>' + keys.map(function (k) { return esc(t.labels[k] || k) + ' ' + x.pts[k]; }).join(' · ') + (x.by ? ' · ' + esc(x.by) : '') + '</small></span>' +
+          '<button type="button" class="btn line sm" data-act="pointsDel" data-from="' + esc(x.from) + '">지우기</button></div>';
+      }).join('') : '<div class="sub">아직 바꾼 적이 없어요. 지금은 기본 점수예요.</div>') + '</div>';
+      openForm({ title: '달란트 점수 바꾸기', submit: '이 점수로 적용', values: vals,
+        fields: [{ name: 'from', label: '적용 시작일', type: 'date', required: true, hint: '이 날짜에 한 QT·출석부터 새 점수로 계산해요. 그 전 기록은 그대로예요.' }]
+          .concat(keys.map(function (k) { return { name: 'p_' + k, label: (t.labels[k] || k) + ' (점)', required: true, numeric: true, max: 3 }; })),
+        footer: hist,
+        onSubmit: function (v) {
+          var pts = {}; keys.forEach(function (k) { pts[k] = String(v['p_' + k] || '').trim(); });
+          return mutate('pointsSave', { from: v.from, pts: pts }, fmtD(v.from, true) + '부터 새 점수로 계산해요');
+        } });
+    },
+    pointsDel: function (ds) {
+      ask(fmtD(ds.from, true) + '부터 적용한 점수 설정을 지울까요? 그 기간은 바로 앞 설정(또는 기본 점수)으로 다시 계산돼요.', '지우기', true).then(function (ok) {
+        if (ok) mutate('pointsSave', { op: 'delete', from: ds.from }, '지웠어요').then(closeLayer);
+      });
     },
     grant: function (ds) {
       var b = state.data.talent.balances.filter(function (x) { return x.id === ds.id; })[0];
